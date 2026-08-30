@@ -23,6 +23,9 @@ class TaskStatus(str, Enum):
     FAILED = "failed"
 
 
+SPONSORBLOCK_DEFAULT_CATEGORIES = "sponsor,selfpromo,interaction,intro,outro,preview"
+
+
 @dataclass
 class DownloadTask:
     task_id: str
@@ -57,7 +60,8 @@ class DownloadManager:
         return self._store_dir / subdir
 
     async def start_download(self, url: str, subdir: str, format: str = "bestaudio/best",
-                             playlist_items: str | None = None) -> str:
+                             playlist_items: str | None = None,
+                             sponsorblock: str | list[str] | None = "default") -> str:
         if not self.validate_subdir(subdir):
             raise ValueError(f"Invalid subdir: {subdir}")
 
@@ -65,11 +69,12 @@ class DownloadManager:
         task = DownloadTask(task_id=task_id, url=url, subdir=subdir)
         self._tasks[task_id] = task
 
-        asyncio.create_task(self._run_download(task, format, playlist_items))
+        asyncio.create_task(self._run_download(task, format, playlist_items, sponsorblock))
         return task_id
 
     async def _run_download(self, task: DownloadTask, format: str,
-                            playlist_items: str | None) -> None:
+                            playlist_items: str | None,
+                            sponsorblock: str | list[str] | None = "default") -> None:
         task.status = TaskStatus.DOWNLOADING
         target_dir = self._target_dir(task.subdir)
         target_dir.mkdir(parents=True, exist_ok=True)
@@ -101,6 +106,15 @@ class DownloadManager:
         ]
         if playlist_items:
             cmd.extend(["--playlist-items", playlist_items])
+        if sponsorblock is not None:
+            if sponsorblock == "default":
+                cats = SPONSORBLOCK_DEFAULT_CATEGORIES
+            elif isinstance(sponsorblock, list):
+                cats = ",".join(sponsorblock)
+            else:
+                cats = str(sponsorblock)
+            if cats:
+                cmd.extend(["--sponsorblock-remove", cats])
         cmd.append(task.url)
 
         def progress_hook(d: dict) -> None:

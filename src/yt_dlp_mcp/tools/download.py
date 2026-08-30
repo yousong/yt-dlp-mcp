@@ -13,7 +13,8 @@ logger = logging.getLogger(__name__)
 def register(server: MCPServer, manager: DownloadManager) -> None:
 
     async def download(url: str, subdir: str, format: str = "bestaudio/best",
-                       playlist_items: str | None = None) -> str:
+                       playlist_items: str | None = None,
+                       sponsorblock: str | list[str] | None = "default") -> str:
         """Download media to the store directory.
 
         Args:
@@ -21,9 +22,12 @@ def register(server: MCPServer, manager: DownloadManager) -> None:
             subdir: Subdirectory name within the store directory.
             format: yt-dlp format string. Defaults to bestaudio/best.
             playlist_items: Playlist item selection, e.g. "1,3,5-10".
+            sponsorblock: SponsorBlock categories to remove. "default" removes
+                sponsor, selfpromo, interaction, intro, outro, preview.
+                None disables. Or pass a list of categories.
         """
         try:
-            task_id = await manager.start_download(url, subdir, format, playlist_items)
+            task_id = await manager.start_download(url, subdir, format, playlist_items, sponsorblock)
             return json.dumps({"task_id": task_id, "status": "pending", "subdir": subdir})
         except ValueError as e:
             return json.dumps({"error": str(e)})
