@@ -73,8 +73,26 @@ def _wrap_tools_with_logging(server: MCPServer) -> None:
     # Access the internal tool registry
     if hasattr(server, '_tool_manager') and hasattr(server._tool_manager, '_tools'):
         for tool_name, tool in server._tool_manager._tools.items():
-            original_handler = tool.handler
-            tool.handler = _log_tool_call(original_handler)
+            original_fn = tool.fn
+            tool.fn = _create_logged_fn(original_fn, tool_name)
+
+
+def _create_logged_fn(original_fn, tool_name):
+    """Create a logged wrapper function with proper closure."""
+    async def logged_fn(*args, **kwargs):
+        # Filter out self if it's a method
+        log_args = {k: v for k, v in kwargs.items() if k != 'self'}
+        if args and not kwargs:
+            log_args = {'args': args}
+        logger.info("Tool call: %s(%s)", tool_name, json.dumps(log_args, ensure_ascii=False, default=str)[:500])
+        try:
+            result = await original_fn(*args, **kwargs)
+            logger.info("Tool %s completed", tool_name)
+            return result
+        except Exception as e:
+            logger.exception("Tool %s failed: %s", tool_name, e)
+            raise
+    return logged_fn
 
 
 def _register_info_tools(server: MCPServer, ytdlp: YtdlpWrapper) -> None:
