@@ -4,7 +4,8 @@ import asyncio
 import json
 import logging
 import os
-import signal
+import subprocess
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -24,16 +25,19 @@ class PlaybackState:
 
 
 class MpvController:
-    def __init__(self, socket_path: str = "/tmp/mpv-socket", pulse_server: str = ""):
+    def __init__(self, socket_path: str = "/tmp/mpv-socket", pulse_server: str = "", audio_device: str = ""):
         self._socket_path = socket_path
         self._pulse_server = pulse_server
-        self._process: asyncio.subprocess.Process | None = None
+        self._audio_device = audio_device
+        self._popen: subprocess.Popen | None = None
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._state = PlaybackState()
         self._request_id = 0
-        self._monitor_task: asyncio.Task | None = None
-        self._on_end_callback: Any = None
+        self._reader_task: asyncio.Task | None = None
+        self._pending_responses: dict[int, asyncio.Future] = {}
+        self._stderr_lines: list[str] = []
+        self._stderr_lock = threading.Lock()
 
     @property
     def state(self) -> PlaybackState:
@@ -41,9 +45,11 @@ class MpvController:
 
     @property
     def is_running(self) -> bool:
-        return self._process is not None and self._process.returncode is None
+        if self._popen is None:
+            return False
+        return self._popen.poll() is None
 
-    async def play(self, pipe_read_fd: int, title: str = "",
+    async def play(self, ytdlp_proc: subprocess.Popen, title: str = "",
                    url: str = "", format_info: dict | None = None) -> None:
         if self.is_running:
             await self.stop()
@@ -56,35 +62,44 @@ class MpvController:
         if self._pulse_server:
             env["PULSE_SERVER"] = self._pulse_server
 
-        logger.info("Starting mpv process with socket: %s", self._socket_path)
-        self._process = await asyncio.create_subprocess_exec(
+        cmd = [
             "mpv",
             "--no-video",
             f"--input-ipc-server={self._socket_path}",
-            "-",
-            stdin=pipe_read_fd,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.PIPE,
+        ]
+        if self._audio_device:
+            cmd.append(f"--audio-device={self._audio_device}")
+        cmd.append("-")
+
+        logger.info("Starting mpv: %s", " ".join(cmd))
+
+        self._stderr_lines.clear()
+        self._popen = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             env=env,
         )
 
-        os.close(pipe_read_fd)
-        logger.info("mpv process started with PID: %d", self._process.pid)
+        stderr_thread = threading.Thread(target=self._collect_stderr, daemon=True)
+        stderr_thread.start()
 
-        # Wait a bit and check stderr for immediate errors
-        await asyncio.sleep(0.2)
-        if self._process.returncode is not None:
-            # Process already exited, read stderr
-            stderr_output = await self._process.stderr.read()
-            if stderr_output:
-                logger.error("mpv exited immediately with code %d: %s", 
-                           self._process.returncode, stderr_output.decode().strip())
-            else:
-                logger.error("mpv exited immediately with code %d (no stderr output)", 
-                           self._process.returncode)
-            self._process = None
+        copy_thread = threading.Thread(
+            target=self._copy_data, args=(ytdlp_proc,), daemon=True
+        )
+        copy_thread.start()
+
+        await asyncio.sleep(0.5)
+        if self._popen.poll() is not None:
+            exit_code = self._popen.returncode
+            stderr_text = "\n".join(self._stderr_lines) or "no output"
+            logger.error("mpv exited with code %d: %s", exit_code, stderr_text)
+            self._popen = None
             self._state.status = "stopped"
-            raise RuntimeError(f"mpv failed to start (exit code {self._process.returncode if self._process else 'unknown'})")
+            raise RuntimeError(f"mpv failed to start (exit code {exit_code}): {stderr_text}")
+
+        logger.info("mpv running with PID: %d", self._popen.pid)
 
         self._state = PlaybackState(
             status="playing",
@@ -93,50 +108,74 @@ class MpvController:
             format_info=format_info or {},
         )
 
-        asyncio.create_task(self._read_stderr())
         asyncio.create_task(self._connect_ipc())
+        asyncio.create_task(self._monitor_process())
 
-    async def _read_stderr(self) -> None:
-        if not self._process or not self._process.stderr:
+    def _collect_stderr(self) -> None:
+        if not self._popen or not self._popen.stderr:
             return
-        while True:
-            line = await self._process.stderr.readline()
-            if not line:
-                break
-            # Log at INFO level to see mpv errors
-            logger.info("mpv: %s", line.decode().strip())
+        try:
+            for line in iter(self._popen.stderr.readline, b''):
+                if line:
+                    text = line.decode(errors="replace").strip()
+                    with self._stderr_lock:
+                        self._stderr_lines.append(text)
+                    logger.info("mpv: %s", text)
+        except Exception:
+            pass
+
+    def _copy_data(self, ytdlp_proc: subprocess.Popen) -> None:
+        try:
+            if not ytdlp_proc.stdout or not self._popen or not self._popen.stdin:
+                return
+            total = 0
+            while True:
+                chunk = ytdlp_proc.stdout.read(8192)
+                if not chunk:
+                    break
+                try:
+                    self._popen.stdin.write(chunk)
+                    self._popen.stdin.flush()
+                    total += len(chunk)
+                except BrokenPipeError:
+                    break
+            logger.info("data copy done, %d bytes total", total)
+        except Exception as e:
+            logger.error("data copy error: %s", e)
+        finally:
+            if self._popen and self._popen.stdin:
+                try:
+                    self._popen.stdin.close()
+                except Exception:
+                    pass
+
+    async def _monitor_process(self) -> None:
+        loop = asyncio.get_event_loop()
+        while self._popen and self._popen.poll() is None:
+            await asyncio.sleep(0.5)
+        if self._popen:
+            logger.info("mpv exited with code %d", self._popen.returncode)
+        self._state.status = "stopped"
 
     async def _connect_ipc(self) -> None:
         socket_path = Path(self._socket_path)
         for attempt in range(50):
             await asyncio.sleep(0.1)
-            
-            # Check if mpv process is still running
-            if self._process and self._process.returncode is not None:
-                logger.error("mpv process exited with code %d before IPC connection", self._process.returncode)
+            if self._popen and self._popen.poll() is not None:
+                logger.error("mpv exited before IPC connection")
                 return
-            
-            # Check if socket exists
             if not socket_path.exists():
-                if attempt % 10 == 9:  # Log every 10 attempts
-                    logger.debug("mpv socket not yet created (attempt %d/50)", attempt + 1)
                 continue
-            
             try:
                 self._reader, self._writer = await asyncio.open_unix_connection(self._socket_path)
-                logger.info("mpv IPC connected successfully")
-                self._monitor_task = asyncio.create_task(self._monitor_events())
+                logger.info("mpv IPC connected")
+                self._reader_task = asyncio.create_task(self._reader_loop())
                 return
-            except (ConnectionRefusedError, FileNotFoundError, OSError) as e:
-                if attempt % 10 == 9:  # Log every 10 attempts
-                    logger.debug("mpv IPC connection attempt %d failed: %s", attempt + 1, e)
+            except (ConnectionRefusedError, FileNotFoundError, OSError):
                 continue
-        
-        logger.error("Failed to connect to mpv IPC socket after 50 attempts. Socket exists: %s, Process running: %s",
-                     socket_path.exists(),
-                     self._process.returncode is None if self._process else False)
+        logger.error("Failed to connect to mpv IPC socket")
 
-    async def _monitor_events(self) -> None:
+    async def _reader_loop(self) -> None:
         if not self._reader:
             return
         try:
@@ -146,39 +185,44 @@ class MpvController:
                     break
                 try:
                     data = json.loads(line)
-                    if data.get("event") == "end-file":
-                        self._state.status = "stopped"
-                        if self._on_end_callback:
-                            await self._on_end_callback()
-                    elif data.get("event") == "playback-restart":
-                        self._state.status = "playing"
-                    elif data.get("event") == "pause":
-                        self._state.status = "paused"
+                    request_id = data.get("request_id")
+                    if request_id is not None and request_id in self._pending_responses:
+                        self._pending_responses[request_id].set_result(data)
+                    else:
+                        if data.get("event") == "end-file":
+                            self._state.status = "stopped"
+                        elif data.get("event") == "playback-restart":
+                            self._state.status = "playing"
+                        elif data.get("event") == "pause":
+                            self._state.status = "paused"
                 except json.JSONDecodeError:
                     pass
         except (ConnectionResetError, asyncio.CancelledError):
             pass
         finally:
             self._state.status = "stopped"
+            for future in self._pending_responses.values():
+                if not future.done():
+                    future.set_result(None)
+            self._pending_responses.clear()
 
     async def _send_command(self, command: list) -> dict | None:
         if not self._writer or not self._reader:
             return None
         self._request_id += 1
         msg = {"command": command, "request_id": self._request_id}
+        future = asyncio.get_event_loop().create_future()
+        self._pending_responses[self._request_id] = future
         try:
             self._writer.write((json.dumps(msg) + "\n").encode())
             await self._writer.drain()
-            while True:
-                line = await asyncio.wait_for(self._reader.readline(), timeout=5.0)
-                if not line:
-                    return None
-                data = json.loads(line)
-                if data.get("request_id") == self._request_id:
-                    return data
+            result = await asyncio.wait_for(future, timeout=5.0)
+            return result
         except (asyncio.TimeoutError, ConnectionResetError, json.JSONDecodeError) as e:
             logger.warning("mpv IPC command failed: %s", e)
             return None
+        finally:
+            self._pending_responses.pop(self._request_id, None)
 
     async def pause(self) -> bool:
         if not self.is_running:
@@ -233,20 +277,22 @@ class MpvController:
         return self._state.duration
 
     async def stop(self) -> None:
-        if self._monitor_task:
-            self._monitor_task.cancel()
-            self._monitor_task = None
+        if self._reader_task:
+            self._reader_task.cancel()
+            self._reader_task = None
         if self._writer:
             self._writer.close()
             self._writer = None
         self._reader = None
-        if self._process and self._process.returncode is None:
-            self._process.terminate()
+        if self._popen and self._popen.poll() is None:
+            self._popen.terminate()
             try:
-                await asyncio.wait_for(self._process.wait(), timeout=5.0)
-            except asyncio.TimeoutError:
-                self._process.kill()
-        self._process = None
+                await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: self._popen.wait(timeout=5.0)
+                )
+            except subprocess.TimeoutExpired:
+                self._popen.kill()
+        self._popen = None
         self._state.status = "stopped"
 
     async def cleanup(self) -> None:

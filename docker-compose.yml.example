@@ -8,6 +8,7 @@ services:
       YTDLP_MCP_TRANSPORT: streamable-http
       YTDLP_MCP_COOKIE_DIR: /data/cookies
       YTDLP_MCP_STORE_DIR: /data/store
+      YTDLP_MCP_MPV_AUDIO_DEVICE: ${YTDLP_MCP_MPV_AUDIO_DEVICE:-}
     volumes:
       - cookie_data:/data/cookies
       - store_data:/data/store

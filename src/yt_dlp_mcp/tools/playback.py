@@ -4,6 +4,8 @@ import asyncio
 import json
 import logging
 import os
+import subprocess
+import threading
 from typing import Any
 
 from mcp.server import MCPServer
@@ -17,18 +19,19 @@ logger = logging.getLogger(__name__)
 _mpv: MpvController | None = None
 _ytdlp: YtdlpWrapper | None = None
 _config: Config | None = None
-_yt_dlp_proc: asyncio.subprocess.Process | None = None
+_yt_dlp_proc: subprocess.Popen | None = None
 
 
-async def _read_ytdlp_stderr(proc: asyncio.subprocess.Process) -> None:
-    """Read and log yt-dlp stderr output."""
+def _read_ytdlp_stderr(proc: subprocess.Popen) -> None:
+    """Read and log yt-dlp stderr output in a background thread."""
     if not proc.stderr:
         return
-    while True:
-        line = await proc.stderr.readline()
-        if not line:
-            break
-        logger.info("yt-dlp: %s", line.decode().strip())
+    try:
+        for line in iter(proc.stderr.readline, b''):
+            if line:
+                logger.info("yt-dlp: %s", line.decode().strip())
+    except Exception as e:
+        logger.debug("yt-dlp stderr reader stopped: %s", e)
 
 
 def register(server: MCPServer, config: Config, ytdlp: YtdlpWrapper, mpv: MpvController) -> None:
@@ -62,28 +65,40 @@ def register(server: MCPServer, config: Config, ytdlp: YtdlpWrapper, mpv: MpvCon
             if cookie_file:
                 cookie_args = ["--cookies", cookie_file]
 
-            pipe_read_fd, pipe_write_fd = os.pipe()
-
-            _yt_dlp_proc = await asyncio.create_subprocess_exec(
-                "python", "-m", "yt_dlp",
-                "-f", format,
-                "-o", "-",
-                "--quiet",
-                "--no-warnings",
-                *cookie_args,
-                url,
-                stdout=pipe_write_fd,
-                stderr=asyncio.subprocess.PIPE,
+            # Start yt-dlp with stdout=subprocess.PIPE
+            _yt_dlp_proc = subprocess.Popen(
+                [
+                    "yt-dlp",
+                    "-f", format,
+                    "-o", "-",
+                    "--quiet",
+                    "--no-warnings",
+                    *cookie_args,
+                    url,
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 env=env,
             )
 
-            os.close(pipe_write_fd)
             logger.info("yt-dlp process started with PID: %d", _yt_dlp_proc.pid)
 
-            # Start reading yt-dlp stderr in background
-            asyncio.create_task(_read_ytdlp_stderr(_yt_dlp_proc))
+            # Wait for yt-dlp to start producing data
+            await asyncio.sleep(1.0)
+            
+            # Check if yt-dlp is still running
+            if _yt_dlp_proc.poll() is not None:
+                stderr = _yt_dlp_proc.stderr.read() if _yt_dlp_proc.stderr else b""
+                logger.error("yt-dlp exited early with code %d: %s", 
+                           _yt_dlp_proc.returncode, stderr.decode().strip() if stderr else "no output")
+                return json.dumps({"error": f"yt-dlp failed to start (exit code {_yt_dlp_proc.returncode})"})
 
-            await _mpv.play(pipe_read_fd, title=title, url=url, format_info={
+            # Start reading yt-dlp stderr in background thread
+            stderr_thread = threading.Thread(target=_read_ytdlp_stderr, args=(_yt_dlp_proc,), daemon=True)
+            stderr_thread.start()
+
+            # Start mpv and pass yt-dlp process for data copying
+            await _mpv.play(_yt_dlp_proc, title=title, url=url, format_info={
                 "format_id": info.get("format_id"),
                 "ext": info.get("ext"),
                 "acodec": info.get("acodec"),
@@ -120,11 +135,13 @@ def register(server: MCPServer, config: Config, ytdlp: YtdlpWrapper, mpv: MpvCon
             result = await _mpv.resume()
         elif action == "stop":
             await _mpv.stop()
-            if _yt_dlp_proc and _yt_dlp_proc.returncode is None:
+            if _yt_dlp_proc and _yt_dlp_proc.poll() is None:
                 _yt_dlp_proc.terminate()
                 try:
-                    await asyncio.wait_for(_yt_dlp_proc.wait(), timeout=5.0)
-                except asyncio.TimeoutError:
+                    await asyncio.get_event_loop().run_in_executor(
+                        None, lambda: _yt_dlp_proc.wait(timeout=5.0)
+                    )
+                except subprocess.TimeoutExpired:
                     _yt_dlp_proc.kill()
             result = True
         elif action == "seek" and value is not None:

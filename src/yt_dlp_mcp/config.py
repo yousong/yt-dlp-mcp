@@ -13,6 +13,7 @@ class Config:
     cookie_dir: str = "/data/cookies"
     store_dir: str = "/data/store"
     mpv_socket: str = "/tmp/mpv-socket"
+    mpv_audio_device: str = ""  # Empty means auto-detect, or use "null" for testing
 
     @classmethod
     def from_env(cls) -> Config:
@@ -24,4 +25,5 @@ class Config:
             cookie_dir=os.environ.get("YTDLP_MCP_COOKIE_DIR", "/data/cookies"),
             store_dir=os.environ.get("YTDLP_MCP_STORE_DIR", "/data/store"),
             mpv_socket=os.environ.get("MPV_SOCKET", "/tmp/mpv-socket"),
+            mpv_audio_device=os.environ.get("YTDLP_MCP_MPV_AUDIO_DEVICE", ""),
         )

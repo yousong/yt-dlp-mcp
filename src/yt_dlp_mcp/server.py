@@ -45,7 +45,11 @@ def _log_tool_call(func: Callable) -> Callable:
 
 def create_server(config: Config) -> tuple[MCPServer, MpvController]:
     ytdlp = YtdlpWrapper(cookie_dir=config.cookie_dir)
-    mpv = MpvController(socket_path=config.mpv_socket, pulse_server=config.pulse_server)
+    mpv = MpvController(
+        socket_path=config.mpv_socket,
+        pulse_server=config.pulse_server,
+        audio_device=config.mpv_audio_device
+    )
     cookie_store = CookieStore(config.cookie_dir)
     download_manager = DownloadManager(store_dir=config.store_dir, cookie_dir=config.cookie_dir)
 

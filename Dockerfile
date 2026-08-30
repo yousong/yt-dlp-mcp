@@ -17,12 +17,14 @@ RUN uv sync --frozen --no-dev
 
 VOLUME ["/data/cookies", "/data/store"]
 
-ENV PULSE_SERVER="" \
+ENV PATH="/app/.venv/bin:$PATH" \
+    PULSE_SERVER="" \
     YTDLP_MCP_TRANSPORT=streamable-http \
     YTDLP_MCP_HOST=0.0.0.0 \
     YTDLP_MCP_PORT=8080 \
     YTDLP_MCP_COOKIE_DIR=/data/cookies \
     YTDLP_MCP_STORE_DIR=/data/store \
+    YTDLP_MCP_MPV_AUDIO_DEVICE="" \
     MPV_SOCKET=/tmp/mpv-socket
 
 ENTRYPOINT ["uv", "run", "python", "-m", "yt_dlp_mcp"]

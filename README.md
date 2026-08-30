@@ -45,6 +45,30 @@ MCP 客户端连接地址：`http://<host>:8080/mcp`
 | `YTDLP_MCP_PORT` | `8080` | SSE 监听端口 |
 | `YTDLP_MCP_COOKIE_DIR` | `/data/cookies` | Cookie 存储目录 |
 | `YTDLP_MCP_STORE_DIR` | `/data/store` | 下载存储目录 |
+| `YTDLP_MCP_MPV_AUDIO_DEVICE` | (空) | mpv 音频输出设备，如 `pulse/default` 或 `null`（测试用） |
+
+### 音频输出配置
+
+容器中没有默认音频设备。需要配置 `PULSE_SERVER` 连接到宿主机的 PulseAudio 服务器，或设置 `YTDLP_MCP_MPV_AUDIO_DEVICE=null` 进行测试（不实际播放音频）。
+
+**连接到 PulseAudio：**
+
+1. 在宿主机上启动 PulseAudio 网络服务：
+   ```bash
+   pactl load-module module-native-protocol-tcp auth-anonymous=1
+   ```
+
+2. 在 docker-compose.yml 中配置：
+   ```yaml
+   environment:
+     PULSE_SERVER: "tcp:host.docker.internal:4713"
+   ```
+
+**测试模式（无音频输出）：**
+```yaml
+environment:
+  YTDLP_MCP_MPV_AUDIO_DEVICE: "null"
+```
 
 ## MCP 工具
 
