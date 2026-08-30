@@ -60,9 +60,7 @@ class MpvController:
         self._process = await asyncio.create_subprocess_exec(
             "mpv",
             "--no-video",
-            "--really-quiet",
             f"--input-ipc-server={self._socket_path}",
-            "--input-ipc-server-writable",
             "-",
             stdin=pipe_read_fd,
             stdout=asyncio.subprocess.DEVNULL,
@@ -72,6 +70,21 @@ class MpvController:
 
         os.close(pipe_read_fd)
         logger.info("mpv process started with PID: %d", self._process.pid)
+
+        # Wait a bit and check stderr for immediate errors
+        await asyncio.sleep(0.2)
+        if self._process.returncode is not None:
+            # Process already exited, read stderr
+            stderr_output = await self._process.stderr.read()
+            if stderr_output:
+                logger.error("mpv exited immediately with code %d: %s", 
+                           self._process.returncode, stderr_output.decode().strip())
+            else:
+                logger.error("mpv exited immediately with code %d (no stderr output)", 
+                           self._process.returncode)
+            self._process = None
+            self._state.status = "stopped"
+            raise RuntimeError(f"mpv failed to start (exit code {self._process.returncode if self._process else 'unknown'})")
 
         self._state = PlaybackState(
             status="playing",

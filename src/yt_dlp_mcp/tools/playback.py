@@ -20,6 +20,17 @@ _config: Config | None = None
 _yt_dlp_proc: asyncio.subprocess.Process | None = None
 
 
+async def _read_ytdlp_stderr(proc: asyncio.subprocess.Process) -> None:
+    """Read and log yt-dlp stderr output."""
+    if not proc.stderr:
+        return
+    while True:
+        line = await proc.stderr.readline()
+        if not line:
+            break
+        logger.info("yt-dlp: %s", line.decode().strip())
+
+
 def register(server: MCPServer, config: Config, ytdlp: YtdlpWrapper, mpv: MpvController) -> None:
     global _mpv, _ytdlp, _config
     _mpv = mpv
@@ -54,7 +65,7 @@ def register(server: MCPServer, config: Config, ytdlp: YtdlpWrapper, mpv: MpvCon
             pipe_read_fd, pipe_write_fd = os.pipe()
 
             _yt_dlp_proc = await asyncio.create_subprocess_exec(
-                "yt-dlp",
+                "python", "-m", "yt_dlp",
                 "-f", format,
                 "-o", "-",
                 "--quiet",
@@ -67,6 +78,10 @@ def register(server: MCPServer, config: Config, ytdlp: YtdlpWrapper, mpv: MpvCon
             )
 
             os.close(pipe_write_fd)
+            logger.info("yt-dlp process started with PID: %d", _yt_dlp_proc.pid)
+
+            # Start reading yt-dlp stderr in background
+            asyncio.create_task(_read_ytdlp_stderr(_yt_dlp_proc))
 
             await _mpv.play(pipe_read_fd, title=title, url=url, format_info={
                 "format_id": info.get("format_id"),

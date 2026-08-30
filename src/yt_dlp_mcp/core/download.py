@@ -90,7 +90,7 @@ class DownloadManager:
                         break
 
         cmd = [
-            "yt-dlp",
+            "python", "-m", "yt_dlp",
             "-f", format,
             "-o", outtmpl,
             "--write-info-json",
