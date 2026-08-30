@@ -21,7 +21,7 @@ class PlaybackState:
     url: str = ""
     position: float = 0.0
     duration: float = 0.0
-    volume: float = 100.0
+    volume: float = 60.0
     format_info: dict[str, Any] = field(default_factory=dict)
 
 
