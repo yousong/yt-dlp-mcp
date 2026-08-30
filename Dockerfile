@@ -25,7 +25,4 @@ ENV PULSE_SERVER="" \
     YTDLP_MCP_STORE_DIR=/data/store \
     MPV_SOCKET=/tmp/mpv-socket
 
-HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/mcp')" || exit 1
-
 ENTRYPOINT ["uv", "run", "python", "-m", "yt_dlp_mcp"]
