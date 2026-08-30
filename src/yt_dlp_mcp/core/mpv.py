@@ -184,7 +184,7 @@ class MpvController:
             format_info=format_info or {},
         )
 
-        asyncio.create_task(self._connect_ipc())
+        await self._connect_ipc()
         asyncio.create_task(self._monitor_process())
 
     def _collect_stderr(self) -> None:
