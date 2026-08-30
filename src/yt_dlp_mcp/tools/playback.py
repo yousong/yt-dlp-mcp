@@ -51,6 +51,8 @@ def register(server: MCPServer, config: Config, ytdlp: YtdlpWrapper, mpv: MpvCon
             if cookie_file:
                 cookie_args = ["--cookies", cookie_file]
 
+            pipe_read_fd, pipe_write_fd = os.pipe()
+
             _yt_dlp_proc = await asyncio.create_subprocess_exec(
                 "yt-dlp",
                 "-f", format,
@@ -59,12 +61,14 @@ def register(server: MCPServer, config: Config, ytdlp: YtdlpWrapper, mpv: MpvCon
                 "--no-warnings",
                 *cookie_args,
                 url,
-                stdout=asyncio.subprocess.PIPE,
+                stdout=pipe_write_fd,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
             )
 
-            await _mpv.play(_yt_dlp_proc, title=title, url=url, format_info={
+            os.close(pipe_write_fd)
+
+            await _mpv.play(pipe_read_fd, title=title, url=url, format_info={
                 "format_id": info.get("format_id"),
                 "ext": info.get("ext"),
                 "acodec": info.get("acodec"),
@@ -101,6 +105,12 @@ def register(server: MCPServer, config: Config, ytdlp: YtdlpWrapper, mpv: MpvCon
             result = await _mpv.resume()
         elif action == "stop":
             await _mpv.stop()
+            if _yt_dlp_proc and _yt_dlp_proc.returncode is None:
+                _yt_dlp_proc.terminate()
+                try:
+                    await asyncio.wait_for(_yt_dlp_proc.wait(), timeout=5.0)
+                except asyncio.TimeoutError:
+                    _yt_dlp_proc.kill()
             result = True
         elif action == "seek" and value is not None:
             result = await _mpv.seek(value)

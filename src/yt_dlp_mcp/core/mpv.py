@@ -43,7 +43,7 @@ class MpvController:
     def is_running(self) -> bool:
         return self._process is not None and self._process.returncode is None
 
-    async def play(self, yt_dlp_proc: asyncio.subprocess.Process, title: str = "",
+    async def play(self, pipe_read_fd: int, title: str = "",
                    url: str = "", format_info: dict | None = None) -> None:
         if self.is_running:
             await self.stop()
@@ -63,11 +63,13 @@ class MpvController:
             f"--input-ipc-server={self._socket_path}",
             "--input-ipc-server-writable",
             "-",
-            stdin=yt_dlp_proc.stdout,
+            stdin=pipe_read_fd,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
             env=env,
         )
+
+        os.close(pipe_read_fd)
 
         self._state = PlaybackState(
             status="playing",
