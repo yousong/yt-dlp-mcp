@@ -142,6 +142,7 @@ class MpvController:
             "mpv",
             "--no-video",
             f"--input-ipc-server={self._socket_path}",
+            f"--volume={self._state.volume}",
         ]
         if self._audio_device:
             cmd.append(f"--audio-device={self._audio_device}")
@@ -177,10 +178,12 @@ class MpvController:
 
         logger.info("mpv running with PID: %d", self._popen.pid)
 
+        volume = self._state.volume
         self._state = PlaybackState(
             status="playing",
             title=title,
             url=url,
+            volume=volume,
             format_info=format_info or {},
         )
 
