@@ -1,0 +1,18 @@
+services:
+  yt-dlp-mcp:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      PULSE_SERVER: "tcp:${PA_HOST:-host.docker.internal}:4713"
+      YTDLP_MCP_TRANSPORT: streamable-http
+      YTDLP_MCP_COOKIE_DIR: /data/cookies
+      YTDLP_MCP_STORE_DIR: /data/store
+    volumes:
+      - cookie_data:/data/cookies
+      - store_data:/data/store
+    network_mode: host  # Required for DLNA/AirPlay/Chromecast device discovery (SSDP/mDNS)
+
+volumes:
+  cookie_data:
+  store_data:

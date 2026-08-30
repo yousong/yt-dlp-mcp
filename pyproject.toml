@@ -1,0 +1,42 @@
+[project]
+name = "yt-dlp-mcp"
+version = "0.1.0"
+description = "MCP service wrapping yt-dlp for audio playback, search, casting, and downloading"
+readme = "README.md"
+authors = [
+    { name = "Yousong Zhou", email = "yszhou4tech@gmail.com" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "async-upnp-client>=0.40",
+    "mcp>=1.0",
+    "pyatv>=0.14",
+    "pychromecast>=14.0",
+    "yt-dlp[default,curl-cffi,deno]>=2025.0",
+]
+
+[project.optional-dependencies]
+cast = [
+    "async-upnp-client>=0.40",
+    "pyatv>=0.14",
+    "pychromecast>=14.0",
+]
+
+[project.scripts]
+yt-dlp-mcp = "yt_dlp_mcp.__main__:main"
+
+[build-system]
+requires = ["uv_build>=0.11.25,<0.12.0"]
+build-backend = "uv_build"
+
+[tool.uv]
+exclude-newer = false
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
