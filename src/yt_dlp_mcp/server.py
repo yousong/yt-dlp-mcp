@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
-from typing import Any
+from typing import Any, Callable
 
 from mcp.server import MCPServer
 
@@ -19,6 +20,27 @@ from .tools import playback as playback_tools
 from .tools import search as search_tools
 
 logger = logging.getLogger(__name__)
+
+
+def _log_tool_call(func: Callable) -> Callable:
+    """Decorator to log tool calls with arguments."""
+    @functools.wraps(func)
+    async def wrapper(*args, **kwargs):
+        tool_name = func.__name__
+        # Filter out self if it's a method
+        log_args = {k: v for k, v in kwargs.items() if k != 'self'}
+        if args and not kwargs:
+            # Positional args case
+            log_args = {'args': args}
+        logger.info("Tool call: %s(%s)", tool_name, json.dumps(log_args, ensure_ascii=False, default=str)[:500])
+        try:
+            result = await func(*args, **kwargs)
+            logger.info("Tool %s completed", tool_name)
+            return result
+        except Exception as e:
+            logger.exception("Tool %s failed: %s", tool_name, e)
+            raise
+    return wrapper
 
 
 def create_server(config: Config) -> tuple[MCPServer, MpvController]:
@@ -40,7 +62,19 @@ def create_server(config: Config) -> tuple[MCPServer, MpvController]:
     download_tools.register(server, download_manager)
     cast_tools.register(server, ytdlp)
 
+    # Wrap all tool handlers with logging
+    _wrap_tools_with_logging(server)
+
     return server, mpv
+
+
+def _wrap_tools_with_logging(server: MCPServer) -> None:
+    """Wrap all registered tool handlers with logging."""
+    # Access the internal tool registry
+    if hasattr(server, '_tool_manager') and hasattr(server._tool_manager, '_tools'):
+        for tool_name, tool in server._tool_manager._tools.items():
+            original_handler = tool.handler
+            tool.handler = _log_tool_call(original_handler)
 
 
 def _register_info_tools(server: MCPServer, ytdlp: YtdlpWrapper) -> None:

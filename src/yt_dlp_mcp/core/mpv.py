@@ -56,6 +56,7 @@ class MpvController:
         if self._pulse_server:
             env["PULSE_SERVER"] = self._pulse_server
 
+        logger.info("Starting mpv process with socket: %s", self._socket_path)
         self._process = await asyncio.create_subprocess_exec(
             "mpv",
             "--no-video",
@@ -70,6 +71,7 @@ class MpvController:
         )
 
         os.close(pipe_read_fd)
+        logger.info("mpv process started with PID: %d", self._process.pid)
 
         self._state = PlaybackState(
             status="playing",
@@ -88,19 +90,38 @@ class MpvController:
             line = await self._process.stderr.readline()
             if not line:
                 break
-            logger.debug("mpv stderr: %s", line.decode().strip())
+            # Log at INFO level to see mpv errors
+            logger.info("mpv: %s", line.decode().strip())
 
     async def _connect_ipc(self) -> None:
-        for _ in range(50):
+        socket_path = Path(self._socket_path)
+        for attempt in range(50):
             await asyncio.sleep(0.1)
+            
+            # Check if mpv process is still running
+            if self._process and self._process.returncode is not None:
+                logger.error("mpv process exited with code %d before IPC connection", self._process.returncode)
+                return
+            
+            # Check if socket exists
+            if not socket_path.exists():
+                if attempt % 10 == 9:  # Log every 10 attempts
+                    logger.debug("mpv socket not yet created (attempt %d/50)", attempt + 1)
+                continue
+            
             try:
                 self._reader, self._writer = await asyncio.open_unix_connection(self._socket_path)
-                logger.info("mpv IPC connected")
+                logger.info("mpv IPC connected successfully")
                 self._monitor_task = asyncio.create_task(self._monitor_events())
                 return
-            except (ConnectionRefusedError, FileNotFoundError, OSError):
+            except (ConnectionRefusedError, FileNotFoundError, OSError) as e:
+                if attempt % 10 == 9:  # Log every 10 attempts
+                    logger.debug("mpv IPC connection attempt %d failed: %s", attempt + 1, e)
                 continue
-        logger.warning("Failed to connect to mpv IPC socket")
+        
+        logger.error("Failed to connect to mpv IPC socket after 50 attempts. Socket exists: %s, Process running: %s",
+                     socket_path.exists(),
+                     self._process.returncode is None if self._process else False)
 
     async def _monitor_events(self) -> None:
         if not self._reader:
