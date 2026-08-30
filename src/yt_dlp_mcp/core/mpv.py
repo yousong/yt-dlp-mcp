@@ -6,9 +6,10 @@ import logging
 import os
 import subprocess
 import threading
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Awaitable
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,36 @@ class PlaybackState:
     duration: float = 0.0
     volume: float = 100.0
     format_info: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class PlaybackQueue:
+    urls: list[str] = field(default_factory=list)
+    current_index: int = 0
+    queue_id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
+    loop: bool = False
+
+    @property
+    def total(self) -> int:
+        return len(self.urls)
+
+    @property
+    def current_url(self) -> str | None:
+        if 0 <= self.current_index < len(self.urls):
+            return self.urls[self.current_index]
+        return None
+
+    @property
+    def has_next(self) -> bool:
+        if self.loop and self.total > 0:
+            return True
+        return self.current_index < self.total - 1
+
+    @property
+    def has_previous(self) -> bool:
+        if self.loop and self.total > 0:
+            return True
+        return self.current_index > 0
 
 
 class MpvController:
@@ -38,6 +69,8 @@ class MpvController:
         self._pending_responses: dict[int, asyncio.Future] = {}
         self._stderr_lines: list[str] = []
         self._stderr_lock = threading.Lock()
+        self._queue: PlaybackQueue | None = None
+        self._on_next_callback: Callable[[str], Awaitable[None]] | None = None
 
     @property
     def state(self) -> PlaybackState:
@@ -48,6 +81,49 @@ class MpvController:
         if self._popen is None:
             return False
         return self._popen.poll() is None
+
+    @property
+    def queue(self) -> PlaybackQueue | None:
+        return self._queue
+
+    def set_queue(self, queue: PlaybackQueue) -> None:
+        self._queue = queue
+
+    def set_on_next_callback(self, callback: Callable[[str], Awaitable[None]] | None) -> None:
+        self._on_next_callback = callback
+
+    async def play_next(self) -> bool:
+        if not self._queue or not self._queue.has_next:
+            return False
+        if self._queue.current_index < self._queue.total - 1:
+            self._queue.current_index += 1
+        elif self._queue.loop:
+            self._queue.current_index = 0
+        else:
+            return False
+        url = self._queue.current_url
+        if url and self._on_next_callback:
+            await self._on_next_callback(url)
+            return True
+        return False
+
+    async def play_previous(self) -> bool:
+        if not self._queue or not self._queue.has_previous:
+            return False
+        if self._queue.current_index > 0:
+            self._queue.current_index -= 1
+        elif self._queue.loop:
+            self._queue.current_index = self._queue.total - 1
+        else:
+            return False
+        url = self._queue.current_url
+        if url and self._on_next_callback:
+            await self._on_next_callback(url)
+            return True
+        return False
+
+    def clear_queue(self) -> None:
+        self._queue = None
 
     async def play(self, ytdlp_proc: subprocess.Popen, title: str = "",
                    url: str = "", format_info: dict | None = None) -> None:
@@ -190,7 +266,11 @@ class MpvController:
                         self._pending_responses[request_id].set_result(data)
                     else:
                         if data.get("event") == "end-file":
-                            self._state.status = "stopped"
+                            reason = data.get("reason", "")
+                            if reason == "eof" and self._queue and self._queue.has_next:
+                                asyncio.create_task(self._auto_play_next())
+                            else:
+                                self._state.status = "stopped"
                         elif data.get("event") == "playback-restart":
                             self._state.status = "playing"
                         elif data.get("event") == "pause":
@@ -205,6 +285,9 @@ class MpvController:
                 if not future.done():
                     future.set_result(None)
             self._pending_responses.clear()
+
+    async def _auto_play_next(self) -> None:
+        await self.play_next()
 
     async def _send_command(self, command: list) -> dict | None:
         if not self._writer or not self._reader:
@@ -294,6 +377,7 @@ class MpvController:
                 self._popen.kill()
         self._popen = None
         self._state.status = "stopped"
+        self.clear_queue()
 
     async def cleanup(self) -> None:
         await self.stop()
