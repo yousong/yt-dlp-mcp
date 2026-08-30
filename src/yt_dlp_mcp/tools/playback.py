@@ -45,6 +45,16 @@ def register(server: MCPServer, config: Config, ytdlp: YtdlpWrapper, mpv: MpvCon
         global _yt_dlp_proc, _format
         _format = fmt
 
+        if _yt_dlp_proc and _yt_dlp_proc.poll() is None:
+            _yt_dlp_proc.terminate()
+            try:
+                await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: _yt_dlp_proc.wait(timeout=3.0)
+                )
+            except subprocess.TimeoutExpired:
+                _yt_dlp_proc.kill()
+            _yt_dlp_proc = None
+
         info = _ytdlp.extract_info(url, format=fmt)
         title = info.get("title", "Unknown")
 

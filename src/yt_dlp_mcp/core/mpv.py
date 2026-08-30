@@ -71,6 +71,7 @@ class MpvController:
         self._stderr_lock = threading.Lock()
         self._queue: PlaybackQueue | None = None
         self._on_next_callback: Callable[[str], Awaitable[None]] | None = None
+        self._auto_playing_next: bool = False
 
     @property
     def state(self) -> PlaybackState:
@@ -271,6 +272,7 @@ class MpvController:
                         if data.get("event") == "end-file":
                             reason = data.get("reason", "")
                             if reason == "eof" and self._queue and self._queue.has_next:
+                                self._auto_playing_next = True
                                 asyncio.create_task(self._auto_play_next())
                             else:
                                 self._state.status = "stopped"
@@ -283,6 +285,8 @@ class MpvController:
         except (ConnectionResetError, asyncio.CancelledError):
             pass
         finally:
+            if self._auto_playing_next:
+                return
             self._state.status = "stopped"
             for future in self._pending_responses.values():
                 if not future.done():
@@ -290,7 +294,10 @@ class MpvController:
             self._pending_responses.clear()
 
     async def _auto_play_next(self) -> None:
-        await self.play_next()
+        try:
+            await self.play_next()
+        finally:
+            self._auto_playing_next = False
 
     async def _send_command(self, command: list) -> dict | None:
         if not self._writer or not self._reader:
